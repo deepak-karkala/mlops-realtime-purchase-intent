@@ -1,0 +1,49 @@
+name: Deploy Streaming Feature Engineering Job
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/feature_engineering/streaming_features.py'
+
+jobs:
+  deploy_streaming_job:
+    name: Deploy and Submit Spark Streaming Job
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+      - uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy-role
+          aws-region: eu-west-1
+
+      - name: Upload Spark script to S3
+        run: |
+          aws s3 cp src/feature_engineering/streaming_features.py s3://ecom-propensity-airflow-artifacts/scripts/
+      
+      - name: Find and Terminate Existing Streaming Step (if any)
+        run: |
+          # In a production system, you need logic to gracefully update the job.
+          # A common strategy is to find the old step ID and cancel it before submitting the new one.
+          # This is complex and depends on naming conventions.
+          echo "Finding and terminating existing job steps..."
+
+      - name: Submit New Spark Job to EMR Cluster
+        id: submit_job
+        run: |
+          CLUSTER_ID=$(aws emr list-clusters --active --query "Clusters[?Name=='ecom-propensity-streaming-cluster'].Id" --output text)
+          if [ -z "$CLUSTER_ID" ]; then
+            echo "::error::Persistent EMR cluster not found!"
+            exit 1
+          fi
+          
+          aws emr add-steps --cluster-id $CLUSTER_ID --steps Type=spark,Name="Realtime Feature Engineering",ActionOnFailure=CONTINUE,Args=[--deploy-mode,client,s3://ecom-propensity-airflow-artifacts/scripts/streaming_features.py]
+
+      - name: Run Integration Test
+        if: success()
+        run: |
+          pip install pytest boto3 feast
+          pytest tests/integration/test_streaming_feature_pipeline.py

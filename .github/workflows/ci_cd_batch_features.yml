@@ -1,0 +1,52 @@
+name: CI/CD for Batch Feature Pipeline
+
+on:
+  push:
+    branches: [ staging ] # This workflow runs when code is pushed to the 'staging' branch
+
+jobs:
+  deploy_to_staging:
+    name: Deploy All Artifacts to Staging
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+      - uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy-role
+          aws-region: eu-west-1
+      
+      - name: Deploy Airflow DAGs and Scripts to S3
+        run: |
+          aws s3 sync pipelines/dags/ s3://ecom-propensity-staging-airflow/dags/
+          aws s3 sync src/ s3://ecom-propensity-staging-airflow/src/
+      
+      - name: Apply Feast Feature Definitions
+        run: |
+          pip install feast
+          cd feature_repo
+          feast apply # This would be configured to point to the staging registry
+
+  run-integration-test:
+    name: Run End-to-End Integration Test
+    runs-on: ubuntu-latest
+    needs: deploy_to_staging # This job only runs after the deployment job succeeds
+    
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with: { python-version: '3.9' }
+
+      - name: Install Test Dependencies
+        run: |
+          pip install pytest feast apache-airflow-client
+      
+      - name: Execute Integration Test
+        env:
+          STAGING_AIRFLOW_HOST: ${{ secrets.STAGING_AIRFLOW_HOST }}
+          STAGING_AIRFLOW_USERNAME: ${{ secrets.STAGING_AIRFLOW_USERNAME }}
+          STAGING_AIRFLOW_PASSWORD: ${{ secrets.STAGING_AIRFLOW_PASSWORD }}
+        run: |
+          pytest tests/integration/test_batch_feature_pipeline.py
