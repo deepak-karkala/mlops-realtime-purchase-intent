@@ -1,0 +1,78 @@
+name: Triggered Retraining and Canary Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      trigger_reason:
+        description: 'Reason for triggering the run (e.g., data_drift, scheduled)'
+        required: true
+        default: 'manual'
+
+jobs:
+  start-training-pipeline:
+    name: Start Model Retraining
+    runs-on: ubuntu-latest
+    outputs:
+      new_model_version: ${{ steps.check_mlflow.outputs.version }}
+
+    steps:
+      - name: Trigger Airflow Training DAG
+        id: trigger_dag
+        # ... (logic to call Airflow API to start 'model_training_pipeline' DAG) ...
+        run: echo "DAG run started..."
+
+      - name: Wait for Training DAG to Complete
+        id: wait_dag
+        # ... (logic to poll Airflow API until DAG run is successful) ...
+        run: echo "DAG run finished successfully."
+
+      - name: Check MLflow for New Staging Model
+        id: check_mlflow
+        # ... (Python script to check MLflow Registry for a new model in 'Staging') ...
+        run: |
+          # This script would output the new version number
+          echo "version=6" >> $GITHUB_OUTPUT
+
+  canary-release:
+    name: Canary Release to Production
+    runs-on: ubuntu-latest
+    needs: start-training-pipeline
+    if: needs.start-training-pipeline.outputs.new_model_version != ''
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: aws-actions/configure-aws-credentials@v2
+        # ... (credentials config) ...
+      - uses: hashicorp/setup-terraform@v2
+
+      - name: 'Step 1: Canary Deploy (10% Traffic)'
+        id: canary_deploy
+        run: |
+          cd infrastructure
+          terraform init
+          # This assumes a script that gets champion/challenger names from MLflow
+          terraform apply -auto-approve -var="challenger_weight=10" ...
+      
+      - name: 'Step 2: Bake Period'
+        run: sleep 900 # Wait 15 minutes
+
+      - name: 'Step 3: Automated Canary Analysis'
+        id: analysis
+        run: |
+          pip install boto3
+          python src/deployment/canary_analysis.py --endpoint-name propensity-endpoint
+
+      - name: 'Step 4: Promote (if analysis passed)'
+        if: steps.analysis.outcome == 'success'
+        run: |
+          echo "Canary analysis passed. Promoting to 100% traffic."
+          cd infrastructure
+          terraform apply -auto-approve -var="challenger_weight=100" ...
+
+      - name: 'Step 5: Rollback (if analysis failed)'
+        if: steps.analysis.outcome != 'success'
+        run: |
+          echo "::error::Canary analysis failed! Rolling back."
+          cd infrastructure
+          terraform apply -auto-approve -var="challenger_weight=0" ...
+          exit 1
