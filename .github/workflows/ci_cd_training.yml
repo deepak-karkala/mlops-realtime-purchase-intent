@@ -1,0 +1,55 @@
+name: CI/CD for Model Training Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/model_training/**'
+      - 'pipelines/dags/model_training_dag.py'
+  pull_request:
+    paths:
+      - 'src/model_training/**'
+      - 'pipelines/dags/model_training_dag.py'
+
+jobs:
+  build-and-test:
+    name: Build Container & Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run Unit Tests
+        run: pytest tests/unit/test_training.py
+
+      - name: Configure AWS credentials
+        if: github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v2
+        # ... credentials config ...
+
+      - name: Login to Amazon ECR
+        if: github.ref == 'refs/heads/main'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        if: github.ref == 'refs/heads/main'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ecom-propensity/training
+          IMAGE_TAG: latest
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f src/model_training/Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+  deploy-dag:
+    name: Deploy Airflow DAG
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v3
+      - uses: aws-actions/configure-aws-credentials@v2
+        # ... credentials config ...
+
+      - name: Deploy DAG to S3
+        run: |
+          aws s3 cp pipelines/dags/model_training_dag.py s3://ecom-propensity-airflow-artifacts/dags/
