@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+gunicorn
+lightgbm
+scikit-learn
+pandas
+feast[redis]

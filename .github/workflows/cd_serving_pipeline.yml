@@ -1,0 +1,80 @@
+name: Deploy Model to SageMaker
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_version:
+        description: 'MLflow Model Version (e.g., 5)'
+        required: true
+      image_tag:
+        description: 'Docker image tag (e.g., v1.2.0)'
+        required: true
+
+jobs:
+  deploy-to-staging:
+    name: Build & Deploy to Staging
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy-role
+          aws-region: eu-west-1
+      
+      - name: Download model artifact from MLflow
+        # This step requires a script that uses the MLflow client
+        # to download the model artifact for the specified version.
+        run: |
+          mkdir -p /tmp/model
+          python scripts/download_model.py --model-name PurchasePropensity --version ${{ github.event.inputs.model_version }} --output-path /tmp/model/model.joblib
+
+      - name: Build and push Docker image to ECR
+        run: |
+          # ... (logic to build /src/serving/Dockerfile, including the downloaded model, and push to ECR with the image_tag) ...
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+      
+      - name: Terraform Apply to Staging
+        run: |
+          cd infrastructure
+          terraform init
+          terraform apply -auto-approve \
+            -var="model_version=${{ github.event.inputs.model_version }}" \
+            -var="image_tag=${{ github.event.inputs.image_tag }}" \
+            -var-file="staging.tfvars" # Use a workspace for staging
+
+      - name: Run Integration Test on Staging Endpoint
+        env:
+          STAGING_SAGEMAKER_ENDPOINT: "propensity-endpoint" # This should be an output from Terraform
+        run: |
+          pip install -r tests/requirements.txt
+          pytest tests/integration/test_inference_pipeline.py
+
+  smoke-test-staging:
+    name: Run API Contract & Smoke Test
+    runs-on: ubuntu-latest
+    needs: deploy-to-staging
+    
+    steps:
+      - uses: actions/checkout@v3
+      - uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy-role
+          aws-region: eu-west-1
+      
+      - name: Install Test Dependencies
+        run: pip install pytest boto3 pydantic
+      
+      - name: Execute Smoke & Contract Tests
+        env:
+          # This endpoint name should be an output from the 'deploy-to-staging' job
+          STAGING_SAGEMAKER_ENDPOINT: ${{ needs.deploy-to-staging.outputs.endpoint_name }}
+        run: pytest tests/integration/test_api_contract.py

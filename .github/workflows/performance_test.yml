@@ -1,0 +1,39 @@
+name: Run Performance Load Test on Staging
+
+on:
+  workflow_dispatch: # Allows manual triggering
+  schedule:
+    - cron: '0 2 * * *' # Runs every night at 2 AM UTC
+
+jobs:
+  run-load-test:
+    name: Execute Locust Load Test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy-role
+          aws-region: eu-west-1
+      
+      - name: Install Dependencies
+        run: pip install locust boto3
+      
+      - name: Run Locust Test
+        env:
+          STAGING_SAGEMAKER_ENDPOINT: ${{ secrets.STAGING_ENDPOINT_NAME }}
+        run: |
+          locust -f tests/performance/locustfile.py --headless \
+            -u 200 -r 50 --run-time 10m \
+            --csv report \
+            --exit-code-on-error 1
+      
+      - name: Upload Locust Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: locust-report
+          path: report*
