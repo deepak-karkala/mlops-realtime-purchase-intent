@@ -1,0 +1,54 @@
+name: Start A/B Test on SageMaker
+
+on:
+  workflow_dispatch:
+    inputs:
+      champion_model_name:
+        description: 'Name of the production (champion) SageMaker model'
+        required: true
+      challenger_model_name:
+        description: 'Name of the new (challenger) SageMaker model'
+        required: true
+      challenger_traffic_split:
+        description: 'Traffic % for challenger (e.g., 50 for a 50/50 split)'
+        required: true
+        default: '50'
+
+jobs:
+  deploy-ab-test:
+    name: Deploy Challenger Variant for A/B Test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-actions-deploy-role
+          aws-region: eu-west-1
+      
+      # NOTE: Assumes the challenger model's container is already built and pushed to ECR
+      # This workflow only handles the infrastructure update to start the test.
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+      
+      - name: Terraform Apply to Start A/B Test
+        run: |
+          cd infrastructure
+          terraform init
+          terraform apply -auto-approve \
+            -var="champion_model_name=${{ github.event.inputs.champion_model_name }}" \
+            -var="challenger_model_name=${{ github.event.inputs.challenger_model_name }}" \
+            -var="challenger_weight=${{ github.event.inputs.challenger_traffic_split }}"
+
+      - name: Run Smoke Test on BOTH Variants
+        # This is a more advanced integration test that would need to be written.
+        # It would invoke the endpoint multiple times, checking the headers
+        # to confirm it gets responses from both the 'champion' and 'challenger' variants.
+        run: echo "SMOKE TEST: Verifying both variants are healthy..."

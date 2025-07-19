@@ -37,6 +37,7 @@ class PredictionRequest(BaseModel):
 class PredictionResponse(BaseModel):
     propensity: float
     model_version: str = os.environ.get("MODEL_VERSION", "v0.0.0")
+    variant_name: str = os.environ.get("SAGEMAKER_VARIANT_NAME", "unknown")
 
 # --- API Endpoints ---
 @app.get("/health")

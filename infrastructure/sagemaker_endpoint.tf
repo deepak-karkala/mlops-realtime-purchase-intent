@@ -1,32 +1,48 @@
-resource "aws_ecr_repository" "serving_repo" {
-  name = "ecom-propensity/serving"
+variable "champion_model_name" {
+  description = "The name of the currently deployed champion model."
+  type        = string
 }
 
-resource "aws_sagemaker_model" "propensity_model" {
-  name               = "propensity-model-${var.model_version}" # Versioned model
-  execution_role_arn = aws_iam_role.sagemaker_training_role.arn # Reuse role for simplicity
-  
-  primary_container {
-    image = "${aws_ecr_repository.serving_repo.repository_url}:${var.image_tag}"
-    environment = {
-      "MODEL_VERSION" = var.model_version
-    }
-  }
+variable "challenger_model_name" {
+  description = "The name of the new challenger model for the A/B test. Can be empty."
+  type        = string
+  default     = ""
+}
+
+variable "challenger_weight" {
+  description = "The percentage of traffic (0-100) to route to the challenger model."
+  type        = number
+  default     = 0
 }
 
 resource "aws_sagemaker_endpoint_configuration" "propensity_endpoint_config" {
-  name = "propensity-endpoint-config-${var.model_version}"
+  name = "propensity-endpoint-config-ab-test"
+  # This lifecycle block prevents Terraform from destroying the old config before the new one is active
+  lifecycle {
+    create_before_destroy = true
+  }
 
+  # --- Champion Model Variant ---
   production_variants {
-    variant_name           = "v1" # This would be the old variant in a canary
-    model_name             = aws_sagemaker_model.propensity_model.name
+    variant_name           = "champion"
+    model_name             = var.champion_model_name
     instance_type          = "ml.c5.xlarge"
     initial_instance_count = 2
-    initial_variant_weight = 1.0 # In a canary, this would be updated
+    initial_variant_weight = 100 - var.challenger_weight
   }
-  
-  # When doing a canary, you would add a second production_variant block
-  # for the new model and adjust the initial_variant_weight.
+
+  # --- Challenger Model Variant (Created Conditionally) ---
+  dynamic "production_variants" {
+    # This block is only created if a challenger_model_name is provided
+    for_each = var.challenger_model_name != "" ? [1] : []
+    content {
+      variant_name           = "challenger"
+      model_name             = var.challenger_model_name
+      instance_type          = "ml.c5.xlarge"
+      initial_instance_count = 2 # Start with same capacity for fair performance test
+      initial_variant_weight = var.challenger_weight
+    }
+  }
 }
 
 resource "aws_sagemaker_endpoint" "propensity_endpoint" {
